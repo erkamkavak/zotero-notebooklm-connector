@@ -2,37 +2,104 @@
  * Zotero 7 Bootstrap Plugin for NotebookLM Sync
  */
 
-// 1. The Endpoint to LIST items tagged #NotebookLM
+// 1. The Endpoint to LIST items
 function ListEndpoint() {}
 ListEndpoint.prototype = {
-	supportedMethods: ['GET'],
-	supportedDataTypes: '*',
+	supportedMethods: ['POST'],
+	supportedDataTypes: ['application/json'],
 	permitBookmarklet: true,
 
 	init: function (urlObj, data, sendResponseCallback) {
 		(async () => {
 			try {
-				const search = new Zotero.Search();
-				const tag = Zotero.Prefs.get('extensions.notebooklm-sync.tag') || '#NotebookLM';
-				search.addCondition('tag', 'is', tag);
-				search.addCondition('itemType', 'isNot', 'attachment');
-				search.addCondition('itemType', 'isNot', 'note');
-				const results = await search.search();
+				// Get filters from POST data - exclusively managed by extension now
+				const tag = data?.tag;
+				const libraryIDStr = data?.libraryID;
+				const collectionName = data?.collectionName;
+				
+				const libraryID = (libraryIDStr !== null && libraryIDStr !== "" && libraryIDStr !== undefined) ? parseInt(libraryIDStr) : Zotero.Libraries.userLibraryID;
+
+				let results = [];
+				
+				if (collectionName && collectionName.trim()) {
+					// Direct collection-based search helper
+					const findCollectionByTitle = async (libID, title) => {
+						const collections = await Zotero.Collections.getByLibrary(libID);
+						for (let col of collections) {
+							if (col.name.toLowerCase() === title.toLowerCase()) return col;
+						}
+						return null;
+					};
+
+					const collection = await findCollectionByTitle(libraryID, collectionName.trim());
+					if (collection) {
+						// Get all items in this collection (recursive)
+						results = await collection.getChildItems(true);
+						
+						// If a tag is also provided, filter the results manually
+						if (tag && tag.trim()) {
+							const taggedResults = [];
+							const tagLower = tag.trim().toLowerCase();
+							for (let id of results) {
+								let item = await Zotero.Items.getAsync(id);
+								if (item.getTags().some(t => t.tag.toLowerCase() === tagLower)) {
+									taggedResults.push(id);
+								}
+							}
+							results = taggedResults;
+						}
+					} else {
+						Zotero.debug("[NotebookLM Bridge] Collection not found: " + collectionName);
+						results = []; // Collection specified but not found
+					}
+				} else {
+					// General library search
+					const search = new Zotero.Search();
+					search.libraryID = libraryID;
+					
+					if (tag && tag.trim()) {
+						search.addCondition('tag', 'is', tag.trim());
+					}
+					
+					search.addCondition('itemType', 'isNot', 'attachment');
+					search.addCondition('itemType', 'isNot', 'note');
+					
+					results = await search.search();
+				}
 
 				let fileList = [];
 
 				for (let id of results) {
 					let item = await Zotero.Items.getAsync(id);
+					
+					// Ensure we don't process attachments/notes if they came from collection.getChildItems
+					if (item.isAttachment() || item.isNote()) continue;
+
 					let attachment = await item.getBestAttachment();
 					if (!attachment) continue;
 
-					if (attachment.attachmentContentType !== 'application/pdf') continue;
+					const validTypes = ['application/pdf', 'text/plain', 'text/markdown', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
+					if (!validTypes.includes(attachment.attachmentContentType)) continue;
+
+					let hash = "";
+					try {
+						hash = await Zotero.DB.valueQueryAsync(
+							"SELECT fingerprint FROM itemAttachments WHERE itemID=?", 
+							[attachment.id]
+						);
+					} catch (e) {
+						Zotero.debug("[NotebookLM Bridge] Failed to get fingerprint: " + e);
+					}
 
 					fileList.push({
 						id: attachment.id,
 						parentId: id,
 						title: item.getField('title'),
-						filename: attachment.attachmentFilename
+						filename: attachment.attachmentFilename,
+						mimeType: attachment.attachmentContentType,
+						dateModified: item.dateModified,
+						version: item.version,
+						hash: hash || ""
 					});
 				}
 				
@@ -56,48 +123,31 @@ FileEndpoint.prototype = {
 	init: function (urlObj, data, sendResponseCallback) {
 		(async () => {
 			try {
-				Zotero.debug("[NotebookLM Bridge] File POST data: " + JSON.stringify(data));
-				
-				// data should be the parsed JSON object { id: 37 }
 				const attachmentId = data?.id;
-				
-				Zotero.debug("[NotebookLM Bridge] Parsed attachmentId: " + attachmentId);
-
 				if (!attachmentId) {
-					sendResponseCallback(400, "text/plain", "No attachment ID provided. Send JSON: { id: 37 }");
+					sendResponseCallback(400, "text/plain", "No attachment ID provided.");
 					return;
 				}
 
 				let attachment = await Zotero.Items.getAsync(parseInt(attachmentId));
 				if (!attachment) {
-					sendResponseCallback(404, "text/plain", "Attachment not found: " + attachmentId);
+					sendResponseCallback(404, "text/plain", "Attachment not found");
 					return;
 				}
 				
 				let filePath = await attachment.getFilePathAsync();
-				Zotero.debug("[NotebookLM Bridge] File path: " + filePath);
-
 				if (!filePath || !await IOUtils.exists(filePath)) {
-					sendResponseCallback(404, "text/plain", "File not found on disk: " + filePath);
+					sendResponseCallback(404, "text/plain", "File not found on disk");
 					return;
 				}
 
 				let fileBytes = await IOUtils.read(filePath);
-				Zotero.debug("[NotebookLM Bridge] File size: " + fileBytes.length);
+				let base64 = encodeBase64(fileBytes);
 
-				// Convert Uint8Array to base64 for safe binary transfer
-				let binary = '';
-				const len = fileBytes.length;
-				for (let i = 0; i < len; i++) {
-					binary += String.fromCharCode(fileBytes[i]);
-				}
-				const base64 = btoa(binary);
-
-				// Return as JSON with base64 data
 				sendResponseCallback(200, "application/json", JSON.stringify({
 					success: true,
 					data: base64,
-					mimeType: "application/pdf"
+					mimeType: attachment.attachmentContentType
 				}));
 
 			} catch (e) {
@@ -108,11 +158,16 @@ FileEndpoint.prototype = {
 	}
 };
 
+function encodeBase64(bytes) {
+    let binary = '';
+    const len = bytes.length;
+    for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+}
 
-// Zotero 7 lifecycle hook
 function startup({ id, version, resourceURI, rootURI }, reason) {
-    Zotero.debug("NotebookLM Sync: Initializing...");
-    
     if (Zotero.initialized) {
         initPlugin(rootURI);
     } else {
@@ -124,12 +179,6 @@ function initPlugin(rootURI) {
     Zotero.Server.Endpoints["/notebooklm/list"] = ListEndpoint;
     Zotero.Server.Endpoints["/notebooklm/file"] = FileEndpoint;
     
-    Zotero.PreferencePanes.register({
-        pluginID: 'notebooklm-sync@erkam.dev',
-        src: rootURI + 'preferences.xhtml',
-        label: 'NotebookLM Sync'
-    });
-
     Zotero.debug("NotebookLM Sync: API Endpoints Registered");
 }
 

@@ -5,7 +5,8 @@
   "permissions": [
     "activeTab",
     "scripting",
-    "debugger"
+    "debugger",
+    "storage"
   ],
   "host_permissions": [
     "http://localhost:23119/*",
