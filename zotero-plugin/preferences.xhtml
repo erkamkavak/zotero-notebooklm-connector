@@ -1,0 +1,27 @@
+<vbox xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+      xmlns:html="http://www.w3.org/1999/xhtml">
+    <groupbox>
+        <label><html:h2>NotebookLM Sync Settings</html:h2></label>
+        
+        <hbox align="center" style="margin-top: 10px;">
+            <label value="Tag to sync:" style="font-weight: bold; margin-right: 10px;" />
+            <html:input type="text" id="notebooklm-tag-input" 
+                        preference="extensions.notebooklm-sync.tag"
+                        style="flex: 1; padding: 4px;" />
+        </hbox>
+        
+        <description style="margin-top: 5px; color: gray;">
+            Only items with this tag will be exposed via the API.
+        </description>
+    </groupbox>
+    
+    <groupbox>
+        <label><html:h3>API Endpoints</html:h3></label>
+        <description>
+            List tagged items: http://localhost:23119/notebooklm/list
+        </description>
+        <description>
+            Get file: http://localhost:23119/notebooklm/file?id=ID
+        </description>
+    </groupbox>
+</vbox>

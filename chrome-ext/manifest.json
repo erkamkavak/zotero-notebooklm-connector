@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Zotero Connector for NotebookLM",
+  "version": "1.0",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "debugger"
+  ],
+  "host_permissions": [
+    "http://localhost:23119/*",
+    "https://notebooklm.google.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Sync Zotero to NotebookLM"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://notebooklm.google.com/*"],
+      "js": ["content.js"]
+    }
+  ]
+}
