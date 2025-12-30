@@ -36,11 +36,6 @@ A seamless bridge between Zotero and Google NotebookLM. This project consists of
 6. Click **"Sync"** on your project card.
 7. The extension will automatically open the "Add Source" dialog and inject your Zotero files.
 
-## Practical Tips
-- **Library ID**: For most users, this is `0` (your personal library).
-- **Collection Name**: Enter the exact name of the Zotero folder you want to sync. It works recursively (includes sub-folders).
-- **Reset**: If you want to re-upload everything regardless of history, you can delete and recreate the project or clear the extension storage.
-
 ---
 
 ## Troubleshooting
