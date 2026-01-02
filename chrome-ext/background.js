@@ -76,60 +76,80 @@ async function runSyncProcess(project) {
             return;
         }
 
-        updateStatus(`[${project.name}] Fetching ${filesNeeded.length} files...`);
+        const totalToSync = filesNeeded.length;
+        updateStatus(`[${project.name}] Found ${totalToSync} files to sync...`);
+        
+        // Let's wait a second so the user can see the count
+        await new Promise(r => setTimeout(r, 1000));
 
-        // 4. Fetch file data
-        const batchData = [];
-        for (const fileInfo of filesNeeded) {
-            try {
-                const fileReq = await fetch(`${ZOTERO_HOST}/notebooklm/file`, {
-                    method: 'POST',
-                    headers: { 'Zotero-Allowed-Request': 'true', 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ id: fileInfo.id })
-                });
-                const fileRes = await fileReq.json();
-                if (fileRes.success) {
-                    batchData.push({
-                        id: fileInfo.id,
-                        title: fileInfo.title,
-                        filename: fileInfo.filename,
-                        mimeType: fileRes.mimeType,
-                        base64: `data:${fileRes.mimeType};base64,${fileRes.data}`,
-                        meta: {
-                            hash: fileInfo.hash,
-                            dateModified: fileInfo.dateModified,
-                            version: fileInfo.version
-                        }
+        // 4. Process in batches of 10
+        const BATCH_SIZE = 10;
+        let syncedCount = 0;
+
+        for (let i = 0; i < totalToSync; i += BATCH_SIZE) {
+            const currentBatchFiles = filesNeeded.slice(i, i + BATCH_SIZE);
+            const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+            const totalBatches = Math.ceil(totalToSync / BATCH_SIZE);
+
+            updateStatus(`[${project.name}] Batch ${batchNum}/${totalBatches}: Fetching ${currentBatchFiles.length} files...`);
+
+            const batchData = [];
+            for (const fileInfo of currentBatchFiles) {
+                try {
+                    const fileReq = await fetch(`${ZOTERO_HOST}/notebooklm/file`, {
+                        method: 'POST',
+                        headers: { 'Zotero-Allowed-Request': 'true', 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ id: fileInfo.id })
                     });
+                    const fileRes = await fileReq.json();
+                    if (fileRes.success) {
+                        batchData.push({
+                            id: fileInfo.id,
+                            title: fileInfo.title,
+                            filename: fileInfo.filename,
+                            mimeType: fileRes.mimeType,
+                            base64: `data:${fileRes.mimeType};base64,${fileRes.data}`,
+                            meta: {
+                                hash: fileInfo.hash,
+                                dateModified: fileInfo.dateModified,
+                                version: fileInfo.version
+                            }
+                        });
+                    }
+                } catch (e) {
+                    console.error(`Failed to fetch ${fileInfo.title}:`, e);
                 }
-            } catch (e) {
-                console.error(`Failed to fetch ${fileInfo.title}:`, e);
+            }
+
+            if (batchData.length > 0) {
+                updateStatus(`[${project.name}] Batch ${batchNum}/${totalBatches}: Injecting...`);
+                await injectBatchViaDebugger(tab.id, batchData);
+
+                // Update history for this batch immediately
+                for (const item of batchData) {
+                    const historyKey = `${notebookId}_${item.id}`;
+                    syncHistory[historyKey] = {
+                        ...item.meta,
+                        timestamp: Date.now()
+                    };
+                }
+                await chrome.storage.local.set({ syncHistory });
+                
+                syncedCount += batchData.length;
+                
+                // Pause slightly between batches to let NotebookLM process
+                if (i + BATCH_SIZE < totalToSync) {
+                    updateStatus(`[${project.name}] Batch ${batchNum} done. Resting...`);
+                    await new Promise(r => setTimeout(r, 2000));
+                }
             }
         }
 
-        if (batchData.length === 0) {
-            updateStatus("Failed to prepare files.");
-            return;
-        }
-
-        updateStatus(`[${project.name}] Injecting ${batchData.length} files...`);
-        await injectBatchViaDebugger(tab.id, batchData);
-
-        // 5. Update history
-        for (const item of batchData) {
-            const historyKey = `${notebookId}_${item.id}`;
-            syncHistory[historyKey] = {
-                ...item.meta,
-                timestamp: Date.now()
-            };
-        }
-        await chrome.storage.local.set({ syncHistory });
-
-        updateStatus(`[${project.name}] Done! Sync complete.`);
+        updateStatus(`[${project.name}] Success! ${syncedCount} files synced.`);
 
     } catch (err) {
         console.error(err);
-        updateStatus("Sync error. Check console.");
+        updateStatus(`[${project.name}] Sync error: ${err.message || 'Check console'}`);
     }
 }
 
@@ -234,8 +254,24 @@ async function sendMessageWithRetry(tabId, message, maxRetries = 3) {
         try {
             return await chrome.tabs.sendMessage(tabId, message);
         } catch (e) {
+            console.warn(`[Sync] Message failed, retrying (${i + 1}/${maxRetries})...`, e.message);
+            
+            // If the content script is missing, try to inject it
+            if (e.message.includes("Could not establish connection") || e.message.includes("Receiver does not exist")) {
+                console.log("[Sync] Content script not found. Attempting to inject...");
+                try {
+                    await chrome.scripting.executeScript({
+                        target: { tabId },
+                        files: ["content.js"]
+                    });
+                    // Wait a bit for injection to settle
+                    await new Promise(r => setTimeout(r, 500));
+                } catch (injectErr) {
+                    console.error("[Sync] Failed to inject content script:", injectErr);
+                }
+            }
+
             if (i === maxRetries - 1) throw e;
-            console.warn(`[Sync] Message failed, retrying (${i + 1}/${maxRetries})...`);
             await new Promise(r => setTimeout(r, 1000));
         }
     }
