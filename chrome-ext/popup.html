@@ -36,15 +36,15 @@
       background: var(--primary);
       color: white;
       border: none;
-      width: 32px;
-      height: 32px;
-      border-radius: 10px;
+      width: 40px;
+      height: 40px;
+      border-radius: 12px;
       cursor: pointer;
       display: flex;
       align-items: center;
       justify-content: center;
       transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-      box-shadow: 0 4px 6px -1px rgba(37, 99, 235, 0.2);
+      box-shadow: 0 4px 12px rgba(37, 99, 235, 0.2);
     }
     .add-btn:hover { background: var(--primary-hover); transform: translateY(-1px); }
 
@@ -202,17 +202,18 @@
       
       <div class="field">
         <label>Zotero Collection</label>
-        <input type="text" id="p-collection" placeholder="Full name of collection">
+        <input type="text" id="p-collection" placeholder="Collection name (optional)">
       </div>
 
       <div class="field">
         <label>Sync Tag</label>
-        <input type="text" id="p-tag" placeholder="#NotebookLM">
+        <input type="text" id="p-tag" placeholder="e.g. #NotebookLM (optional)">
       </div>
 
       <div class="field">
         <label>Library ID</label>
         <input type="text" id="p-library" value="0">
+        <div style="font-size: 10px; color: var(--text-muted); margin-top: 4px;">Use '0' for personal library</div>
       </div>
 
       <div class="form-actions">
