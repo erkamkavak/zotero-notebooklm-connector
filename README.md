@@ -32,7 +32,11 @@ A seamless bridge between Zotero and Google NotebookLM. This project consists of
 2. Navigate to your target notebook in **Google NotebookLM**.
 3. Click the **Zotero Connector** icon in your Chrome extension bar.
 4. Click **"+"** to create a new project.
-5. Enter your project name and optional filters (Collection name or #Tag).
+5. Enter your project details:
+    - **Project Name**: Any name you'd like.
+    - **Zotero Collection**: (Optional) The name of a Zotero collection (e.g., `Thesis`). If blank, searches your whole library.
+    - **Sync Tag**: (Optional) A tag applied to items you want to sync (e.g., `#NotebookLM`).
+    - **Library ID**: Use `0` for your personal library (default). Use the numeric ID from the URL for Group libraries.
 6. Click **"Sync"** on your project card.
 7. The extension will automatically open the "Add Source" dialog and inject your Zotero files.
 

@@ -17,7 +17,7 @@ ListEndpoint.prototype = {
 				const libraryIDStr = data?.libraryID;
 				const collectionName = data?.collectionName;
 				
-				const libraryID = (libraryIDStr !== null && libraryIDStr !== "" && libraryIDStr !== undefined) ? parseInt(libraryIDStr) : Zotero.Libraries.userLibraryID;
+				const libraryID = (libraryIDStr && libraryIDStr !== "0") ? parseInt(libraryIDStr) : Zotero.Libraries.userLibraryID;
 
 				let results = [];
 				
