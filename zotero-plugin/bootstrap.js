@@ -17,14 +17,26 @@ ListEndpoint.prototype = {
 				const libraryIDStr = data?.libraryID;
 				const collectionName = data?.collectionName;
 				
-				const libraryID = (libraryIDStr && libraryIDStr !== "0") ? parseInt(libraryIDStr) : Zotero.Libraries.userLibraryID;
+				let libraryID = Zotero.Libraries.userLibraryID;
+				if (libraryIDStr && libraryIDStr !== "0") {
+					const parsedID = parseInt(libraryIDStr);
+					if (!isNaN(parsedID)) {
+						let foundLib = null;
+						if (Zotero.Libraries.getByGroupID) {
+							foundLib = Zotero.Libraries.getByGroupID(parsedID);
+						} else if (Zotero.Libraries.getAll) {
+							foundLib = Zotero.Libraries.getAll().find(l => l.groupID === parsedID);
+						}
+						libraryID = foundLib ? (foundLib.libraryID || foundLib.id) : parsedID;
+					}
+				}
 
 				let results = [];
 				
 				if (collectionName && collectionName.trim()) {
 					// Direct collection-based search helper
 					const findCollectionByTitle = async (libID, title) => {
-						const collections = await Zotero.Collections.getByLibrary(libID);
+						const collections = await Zotero.Collections.getByLibrary(libID, true);
 						for (let col of collections) {
 							if (col.name.toLowerCase() === title.toLowerCase()) return col;
 						}
