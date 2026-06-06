@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "NotebookLM Connector",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": "Erkam",
   "description": "Exposes tagged items via localhost API for Chrome Extension sync.",
   "applications": {
@@ -9,7 +9,7 @@
       "id": "notebooklm-sync@erkam.dev",
       "update_url": "https://raw.githubusercontent.com/erkam/zotero-notebook-lm-connector/main/zotero-plugin/update.json",
       "strict_min_version": "6.999",
-      "strict_max_version": "7.0.*"
+      "strict_max_version": "9.0.*"
     }
   }
 }
