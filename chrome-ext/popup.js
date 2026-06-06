@@ -10,8 +10,12 @@ const addBtn = document.getElementById('add-project-btn');
 const cancelBtn = document.getElementById('cancel-btn');
 const saveBtn = document.getElementById('save-btn');
 const librarySelect = document.getElementById('p-library');
-const collectionOptions = document.getElementById('collection-options');
-const tagOptions = document.getElementById('tag-options');
+const collectionSelect = document.getElementById('p-collection');
+const tagSelect = document.getElementById('p-tag');
+const collectionCustomField = document.getElementById('collection-custom-field');
+const collectionCustomInput = document.getElementById('p-collection-custom');
+const tagCustomField = document.getElementById('tag-custom-field');
+const tagCustomInput = document.getElementById('p-tag-custom');
 
 let projects = [];
 let zoteroMetadata = {
@@ -69,7 +73,7 @@ function render() {
                 metaHtml += `
                     <div class="meta-item">
                         ${icons.folder}
-                        <span>${escapeHtml(p.collection)}</span>
+                        <span>${escapeHtml(p.collectionDisplay || p.collection)}</span>
                     </div>
                 `;
             }
@@ -198,42 +202,111 @@ function renderLibraryOptions(selected = librarySelect.value || "0") {
 
 function renderMetadataOptions() {
     const libraryID = librarySelect.value || "0";
-    fillDatalist(
-        collectionOptions,
-        zoteroMetadata.collections
+    const selectedCollectionKey = collectionSelect.value;
+    const selectedTag = tagSelect.value;
+
+    fillSelect(collectionSelect, [
+        { value: "", label: "All collections" },
+        ...zoteroMetadata.collections
             .filter((collection) => String(collection.libraryID) === libraryID)
-            .map((collection) => collection.name)
-    );
-    fillDatalist(
-        tagOptions,
-        zoteroMetadata.tags
+            .map((collection) => ({
+                value: collection.key,
+                label: collection.path || collection.name,
+                meta: collection.name
+            })),
+        { value: "__custom__", label: "Custom collection name..." }
+    ]);
+
+    fillSelect(tagSelect, [
+        { value: "", label: "Any tag" },
+        ...zoteroMetadata.tags
             .filter((tag) => String(tag.libraryID) === libraryID)
-            .map((tag) => tag.name)
-    );
+            .map((tag) => ({
+                value: tag.name,
+                label: tag.name
+            })),
+        { value: "__custom__", label: "Custom tag name..." }
+    ]);
+
+    restoreSelectValue(collectionSelect, selectedCollectionKey);
+    restoreSelectValue(tagSelect, selectedTag);
+    toggleCustomFields();
 }
 
-function fillDatalist(element, values) {
-    const uniqueValues = [...new Set(values.filter(Boolean))].sort((a, b) => a.localeCompare(b));
+function fillSelect(element, options) {
     element.innerHTML = "";
-    for (const value of uniqueValues) {
+    for (const item of options) {
         const option = document.createElement("option");
-        option.value = value;
+        option.value = item.value;
+        option.textContent = item.label;
+        if (item.meta) option.dataset.name = item.meta;
         element.appendChild(option);
     }
+}
+
+function restoreSelectValue(element, value) {
+    if ([...element.options].some((option) => option.value === value)) {
+        element.value = value;
+    }
+}
+
+function toggleCustomFields() {
+    collectionCustomField.classList.toggle("hidden", collectionSelect.value !== "__custom__");
+    tagCustomField.classList.toggle("hidden", tagSelect.value !== "__custom__");
 }
 
 function showForm(p = null, idx = -1) {
     const libraryID = p ? (p.libraryID || '0') : '0';
     renderLibraryOptions(libraryID);
     document.getElementById('p-name').value = p ? p.name : '';
-    document.getElementById('p-tag').value = p ? p.tag : '';
-    document.getElementById('p-collection').value = p ? p.collection : '';
     document.getElementById('p-notebook').value = p ? (p.notebookId || '') : '';
     document.getElementById('edit-id').value = idx;
     document.getElementById('form-title-text').textContent = p ? 'Edit Project' : 'New Project';
+
+    setCollectionValue(p);
+    setTagValue(p);
+    toggleCustomFields();
     
     mainView.classList.add('hidden');
     formView.classList.remove('hidden');
+}
+
+function setCollectionValue(project) {
+    collectionCustomInput.value = "";
+    if (!project?.collection) {
+        collectionSelect.value = "";
+        return;
+    }
+
+    if (project.collectionKey && [...collectionSelect.options].some((option) => option.value === project.collectionKey)) {
+        collectionSelect.value = project.collectionKey;
+        return;
+    }
+
+    const matchedOption = [...collectionSelect.options].find((option) => option.dataset.name === project.collection);
+    if (matchedOption) {
+        collectionSelect.value = matchedOption.value;
+        return;
+    }
+
+    collectionSelect.value = "__custom__";
+    collectionCustomInput.value = project.collection;
+}
+
+function setTagValue(project) {
+    tagCustomInput.value = "";
+    if (!project?.tag) {
+        tagSelect.value = "";
+        return;
+    }
+
+    if ([...tagSelect.options].some((option) => option.value === project.tag)) {
+        tagSelect.value = project.tag;
+        return;
+    }
+
+    tagSelect.value = "__custom__";
+    tagCustomInput.value = project.tag;
 }
 
 function hideForm() {
@@ -251,10 +324,14 @@ saveBtn.addEventListener('click', async () => {
     if (!name) return alert('Please enter a project name.');
 
     const idx = parseInt(document.getElementById('edit-id').value);
+    const collection = getSelectedCollection();
+    const tag = getSelectedTag();
     const p = {
         name,
-        tag: document.getElementById('p-tag').value.trim(),
-        collection: document.getElementById('p-collection').value.trim(),
+        tag,
+        collection: collection.name,
+        collectionKey: collection.key,
+        collectionDisplay: collection.display,
         libraryID: document.getElementById('p-library').value.trim(),
         notebookId: document.getElementById('p-notebook').value.trim()
     };
@@ -272,6 +349,33 @@ saveBtn.addEventListener('click', async () => {
 addBtn.addEventListener('click', () => showForm());
 cancelBtn.addEventListener('click', hideForm);
 librarySelect.addEventListener('change', renderMetadataOptions);
+collectionSelect.addEventListener('change', toggleCustomFields);
+tagSelect.addEventListener('change', toggleCustomFields);
+
+function getSelectedCollection() {
+    if (collectionSelect.value === "__custom__") {
+        const name = collectionCustomInput.value.trim();
+        return { name, key: "", display: name };
+    }
+
+    const option = collectionSelect.selectedOptions[0];
+    if (!option || !collectionSelect.value) {
+        return { name: "", key: "", display: "" };
+    }
+
+    return {
+        name: option.dataset.name || option.textContent.trim(),
+        key: collectionSelect.value,
+        display: option.textContent.trim()
+    };
+}
+
+function getSelectedTag() {
+    if (tagSelect.value === "__custom__") {
+        return tagCustomInput.value.trim();
+    }
+    return tagSelect.value.trim();
+}
 
 function startSync(project) {
     showToast(`Syncing "${project.name}"...`, 0);

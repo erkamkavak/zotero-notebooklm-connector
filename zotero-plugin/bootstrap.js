@@ -16,22 +16,28 @@ ListEndpoint.prototype = {
 				const tag = data?.tag;
 				const libraryIDStr = data?.libraryID;
 				const collectionName = data?.collectionName;
+				const collectionKey = data?.collectionKey;
 				
 				const libraryID = (libraryIDStr && libraryIDStr !== "0") ? parseInt(libraryIDStr) : Zotero.Libraries.userLibraryID;
 
 				let results = [];
 				
-				if (collectionName && collectionName.trim()) {
-					// Direct collection-based search helper
-					const findCollectionByTitle = async (libID, title) => {
+				if ((collectionKey && collectionKey.trim()) || (collectionName && collectionName.trim())) {
+					const findCollection = async (libID, key, title) => {
 						const collections = await Zotero.Collections.getByLibrary(libID);
+						if (key && key.trim()) {
+							for (let col of collections) {
+								if (col.key === key.trim()) return col;
+							}
+						}
+						if (!title || !title.trim()) return null;
 						for (let col of collections) {
 							if (col.name.toLowerCase() === title.toLowerCase()) return col;
 						}
 						return null;
 					};
 
-					const collection = await findCollectionByTitle(libraryID, collectionName.trim());
+					const collection = await findCollection(libraryID, collectionKey, collectionName);
 					if (collection) {
 						// Get all items in this collection (recursive)
 						results = await collection.getChildItems(true);
@@ -49,7 +55,7 @@ ListEndpoint.prototype = {
 							results = taggedResults;
 						}
 					} else {
-						Zotero.debug("[NotebookLM Bridge] Collection not found: " + collectionName);
+						Zotero.debug("[NotebookLM Bridge] Collection not found: " + (collectionKey || collectionName));
 						results = []; // Collection specified but not found
 					}
 				} else {
@@ -177,13 +183,20 @@ MetadataEndpoint.prototype = {
 
 					try {
 						const libraryCollections = await Zotero.Collections.getByLibrary(libraryID);
+						const collectionByKey = {};
 						for (let collection of libraryCollections) {
+							collectionByKey[collection.key] = collection;
+						}
+						for (let collection of libraryCollections) {
+							const path = buildCollectionPath(collection, collectionByKey);
 							collections.push({
 								key: collection.key,
 								name: collection.name,
+								path,
 								libraryID: library.id,
 								actualLibraryID: libraryID,
-								parentKey: collection.parentKey || null
+								parentKey: collection.parentKey || null,
+								depth: Math.max(0, path.split(" / ").length - 1)
 							});
 						}
 					} catch (e) {
@@ -206,7 +219,7 @@ MetadataEndpoint.prototype = {
 
 				sendResponseCallback(200, "application/json", JSON.stringify({
 					libraries,
-					collections,
+					collections: collections.sort((a, b) => a.path.localeCompare(b.path)),
 					tags
 				}));
 			} catch (e) {
@@ -216,6 +229,21 @@ MetadataEndpoint.prototype = {
 		})();
 	}
 };
+
+function buildCollectionPath(collection, collectionByKey) {
+	const names = [collection.name];
+	let parentKey = collection.parentKey || null;
+	let guard = 0;
+
+	while (parentKey && collectionByKey[parentKey] && guard < 20) {
+		const parent = collectionByKey[parentKey];
+		names.unshift(parent.name);
+		parentKey = parent.parentKey || null;
+		guard += 1;
+	}
+
+	return names.join(" / ");
+}
 
 async function getLibrariesForMetadata() {
 	const userLibraryID = Zotero.Libraries.userLibraryID;

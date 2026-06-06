@@ -129,6 +129,7 @@
     .form-title { font-weight: 800; margin-bottom: 20px; font-size: 18px; color: #0f172a; }
     
     .field { margin-bottom: 16px; }
+    .field.compact { margin-top: -8px; }
     label { display: block; font-size: 12px; font-weight: 700; margin-bottom: 6px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0; }
     input, select { 
       width: 100%; 
@@ -203,14 +204,20 @@
       
       <div class="field">
         <label>Zotero Collection</label>
-        <input type="text" id="p-collection" list="collection-options" placeholder="Collection name (optional)">
-        <datalist id="collection-options"></datalist>
+        <select id="p-collection"></select>
+      </div>
+
+      <div class="field compact hidden" id="collection-custom-field">
+        <input type="text" id="p-collection-custom" placeholder="Collection name">
       </div>
 
       <div class="field">
         <label>Sync Tag</label>
-        <input type="text" id="p-tag" list="tag-options" placeholder="e.g. #NotebookLM (optional)">
-        <datalist id="tag-options"></datalist>
+        <select id="p-tag"></select>
+      </div>
+
+      <div class="field compact hidden" id="tag-custom-field">
+        <input type="text" id="p-tag-custom" placeholder="Tag name">
       </div>
 
       <div class="field">

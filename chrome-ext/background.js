@@ -159,6 +159,7 @@ async function runSyncProcessInner(project) {
             body: JSON.stringify({
                 tag: project.tag,
                 collectionName: project.collection,
+                collectionKey: project.collectionKey,
                 libraryID: project.libraryID
             })
         });
