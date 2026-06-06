@@ -1,5 +1,6 @@
 const ZOTERO_HOST = "http://localhost:23119";
 let syncLock = false;
+const STATUS_TTL_MS = 7000;
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "START_SYNC") {
@@ -13,6 +14,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 async function runSyncProcess(project) {
     if (syncLock) {
+        updateStatus("A sync is already running. Wait for it to finish before starting another one.", { kind: "warning" });
         notifySyncDone(project?.name || "");
         return;
     }
@@ -30,8 +32,24 @@ function notifySyncDone(projectName) {
     chrome.runtime.sendMessage({ action: "SYNC_DONE", projectName }).catch(() => {});
 }
 
-function updateStatus(text) {
-    chrome.runtime.sendMessage({ action: "UPDATE_STATUS", text }).catch(() => {});
+function inferStatusKind(text) {
+    if (/error|failed|could not|missing|not found|sign in/i.test(text)) return "error";
+    if (/complete|up to date/i.test(text)) return "success";
+    if (/skipped|duplicate|no items/i.test(text)) return "warning";
+    return "info";
+}
+
+function updateStatus(text, options = {}) {
+    const payload = {
+        action: "UPDATE_STATUS",
+        text,
+        kind: options.kind || inferStatusKind(text),
+        timestamp: Date.now(),
+        expiresAt: Date.now() + (options.duration || STATUS_TTL_MS)
+    };
+
+    chrome.storage.local.set({ lastStatus: payload }).catch(() => {});
+    chrome.runtime.sendMessage(payload).catch(() => {});
 }
 
 function normalizeFilename(name) {
@@ -62,7 +80,7 @@ async function resolveNotebookTarget(project) {
         .sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
 
     if (notebookTabs.length === 0) {
-        throw new Error("Open a NotebookLM tab while syncing so the extension can use your logged-in session.");
+        throw new Error("No NotebookLM tab found. Open https://notebooklm.google.com in Chrome, sign in, and open the notebook you want to sync.");
     }
 
     const targetTab = configured
@@ -71,7 +89,7 @@ async function resolveNotebookTarget(project) {
 
     const notebookId = configured || parseNotebookIdFromUrl(targetTab.url);
     if (!notebookId) {
-        throw new Error("Notebook ID is missing. Open a specific NotebookLM notebook tab or set Notebook ID in project settings.");
+        throw new Error("No NotebookLM notebook is selected. Open a specific notebook tab or enter its Notebook ID in this project.");
     }
 
     return { notebookId, tabId: targetTab.id };
@@ -90,7 +108,11 @@ async function sendNotebookMessage(tabId, message) {
             files: ["content.js"]
         });
         await new Promise((resolve) => setTimeout(resolve, 250));
-        return chrome.tabs.sendMessage(tabId, message);
+        try {
+            return await chrome.tabs.sendMessage(tabId, message);
+        } catch (secondError) {
+            throw new Error("Could not connect to the NotebookLM page. Reload the NotebookLM tab, make sure you are signed in, and try again.");
+        }
     }
 }
 
@@ -150,24 +172,28 @@ async function runSyncProcessInner(project) {
     updateStatus(`[${project.name}] Getting list from Zotero...`);
 
     try {
-        const listReq = await fetch(`${ZOTERO_HOST}/notebooklm/list`, {
-            method: "POST",
-            headers: {
-                "Zotero-Allowed-Request": "true",
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-                tag: project.tag,
-                collectionName: project.collection,
-                collectionKey: project.collectionKey,
-                libraryID: project.libraryID
-            })
-        });
+        let listReq;
+        try {
+            listReq = await fetch(`${ZOTERO_HOST}/notebooklm/list`, {
+                method: "POST",
+                headers: {
+                    "Zotero-Allowed-Request": "true",
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    tag: project.tag,
+                    collectionName: project.collection,
+                    collectionKey: project.collectionKey,
+                    libraryID: project.libraryID
+                })
+            });
+        } catch (e) {
+            throw new Error("Could not connect to Zotero. Open Zotero and make sure the NotebookLM Connector plugin is installed and enabled.");
+        }
 
         if (!listReq.ok) {
             const errorText = await listReq.text();
-            updateStatus(`Error: ${listReq.status} - ${errorText}`);
-            return;
+            throw new Error(`Zotero returned HTTP ${listReq.status}: ${errorText || "Unable to list matching attachments."}`);
         }
 
         const filesToSync = await listReq.json();

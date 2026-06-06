@@ -5,6 +5,9 @@ const emptyState = document.getElementById('empty-state');
 const mainView = document.getElementById('main-view');
 const formView = document.getElementById('form-view');
 const ZOTERO_HOST = "http://localhost:23119";
+const POPUP_STATE_KEY = "popupState";
+const LAST_STATUS_KEY = "lastStatus";
+const TOAST_DEFAULT_MS = 7000;
 
 const addBtn = document.getElementById('add-project-btn');
 const cancelBtn = document.getElementById('cancel-btn');
@@ -18,6 +21,8 @@ const tagCustomField = document.getElementById('tag-custom-field');
 const tagCustomInput = document.getElementById('p-tag-custom');
 
 let projects = [];
+let toastTimer = null;
+let restoringPopupState = false;
 let zoteroMetadata = {
     libraries: [{ id: "0", name: "My Library", type: "user" }],
     collections: [],
@@ -41,20 +46,70 @@ document.querySelector('#status-toast i').outerHTML = icons.info;
 
 // Initialize
 async function load() {
-    const [data] = await Promise.all([
-        chrome.storage.local.get('projects'),
+    const [data, metadataLoaded] = await Promise.all([
+        chrome.storage.local.get(['projects', POPUP_STATE_KEY, LAST_STATUS_KEY]),
         refreshZoteroMetadata()
     ]);
     projects = data.projects || [];
     renderLibraryOptions();
     render();
+    restorePopupState(data[POPUP_STATE_KEY]);
+    restoreLastStatus(data[LAST_STATUS_KEY], metadataLoaded);
 }
 
-function showToast(text, duration = 3000) {
+function getToastDuration() {
+    return TOAST_DEFAULT_MS;
+}
+
+function showToast(text, options = {}) {
+    const duration = options.duration ?? getToastDuration();
+    const kind = options.kind || inferStatusKind(text);
+
+    window.clearTimeout(toastTimer);
     toastText.textContent = text;
+    toast.classList.remove('info', 'success', 'warning', 'error');
+    toast.classList.add(kind);
     toast.classList.add('show');
-    if (duration > 0) {
-        setTimeout(() => toast.classList.remove('show'), duration);
+
+    if (options.persist) {
+        chrome.storage.local.set({
+            [LAST_STATUS_KEY]: {
+                action: "UPDATE_STATUS",
+                text,
+                kind,
+                timestamp: Date.now(),
+                expiresAt: Date.now() + duration
+            }
+        }).catch(() => {});
+    }
+
+    if (duration >= 0) {
+        toastTimer = window.setTimeout(() => toast.classList.remove('show'), duration);
+    }
+}
+
+function inferStatusKind(text) {
+    if (/error|failed|could not|missing|not found|sign in/i.test(text)) return "error";
+    if (/complete|up to date/i.test(text)) return "success";
+    if (/skipped|duplicate|no items/i.test(text)) return "warning";
+    return "info";
+}
+
+function restoreLastStatus(lastStatus, metadataLoaded) {
+    const now = Date.now();
+    if (lastStatus?.text && (!lastStatus.expiresAt || lastStatus.expiresAt > now)) {
+        showToast(lastStatus.text, {
+            kind: lastStatus.kind,
+            duration: Math.max(1200, (lastStatus.expiresAt || now + TOAST_DEFAULT_MS) - now)
+        });
+        return;
+    }
+
+    if (!metadataLoaded) {
+        showToast("Could not load Zotero collections. Open Zotero and make sure the NotebookLM Connector plugin is enabled.", {
+            kind: "error",
+            persist: true
+        });
     }
 }
 
@@ -164,8 +219,10 @@ async function refreshZoteroMetadata() {
             collections: Array.isArray(metadata.collections) ? metadata.collections : [],
             tags: Array.isArray(metadata.tags) ? metadata.tags : []
         };
+        return true;
     } catch (e) {
         console.warn("[Popup] Could not load Zotero metadata:", e);
+        return false;
     }
 }
 
@@ -255,7 +312,69 @@ function toggleCustomFields() {
     tagCustomField.classList.toggle("hidden", tagSelect.value !== "__custom__");
 }
 
-function showForm(p = null, idx = -1) {
+function getFormDraft() {
+    return {
+        name: document.getElementById('p-name').value,
+        notebookId: document.getElementById('p-notebook').value,
+        editIndex: parseInt(document.getElementById('edit-id').value, 10),
+        libraryID: librarySelect.value || "0",
+        collectionValue: collectionSelect.value,
+        collectionCustom: collectionCustomInput.value,
+        tagValue: tagSelect.value,
+        tagCustom: tagCustomInput.value
+    };
+}
+
+function persistCurrentPopupState() {
+    if (restoringPopupState) return;
+
+    const state = formView.classList.contains('hidden')
+        ? { view: "main" }
+        : { view: "form", editIndex: parseInt(document.getElementById('edit-id').value, 10), draft: getFormDraft() };
+
+    chrome.storage.local.set({ [POPUP_STATE_KEY]: state }).catch(() => {});
+}
+
+function restorePopupState(state) {
+    if (!state || state.view !== "form") return;
+
+    restoringPopupState = true;
+    const editIndex = Number.isInteger(state.editIndex) ? state.editIndex : Number(state.draft?.editIndex);
+    const project = Number.isInteger(editIndex) && editIndex >= 0 ? projects[editIndex] : null;
+    showForm(project, project ? editIndex : -1, { persist: false });
+    applyFormDraft(state.draft);
+    restoringPopupState = false;
+}
+
+function applyFormDraft(draft) {
+    if (!draft) return;
+
+    document.getElementById('p-name').value = draft.name || "";
+    document.getElementById('p-notebook').value = draft.notebookId || "";
+    if (Number.isInteger(draft.editIndex)) {
+        document.getElementById('edit-id').value = draft.editIndex;
+    }
+
+    renderLibraryOptions(draft.libraryID || "0");
+    setSelectValue(collectionSelect, draft.collectionValue || "", "__custom__");
+    collectionCustomInput.value = draft.collectionCustom || "";
+    setSelectValue(tagSelect, draft.tagValue || "", "__custom__");
+    tagCustomInput.value = draft.tagCustom || "";
+    toggleCustomFields();
+}
+
+function setSelectValue(select, value, fallbackValue) {
+    if ([...select.options].some((option) => option.value === value)) {
+        select.value = value;
+        return;
+    }
+
+    if (value) {
+        select.value = fallbackValue;
+    }
+}
+
+function showForm(p = null, idx = -1, options = {}) {
     const libraryID = p ? (p.libraryID || '0') : '0';
     renderLibraryOptions(libraryID);
     document.getElementById('p-name').value = p ? p.name : '';
@@ -269,6 +388,10 @@ function showForm(p = null, idx = -1) {
     
     mainView.classList.add('hidden');
     formView.classList.remove('hidden');
+
+    if (options.persist !== false) {
+        persistCurrentPopupState();
+    }
 }
 
 function setCollectionValue(project) {
@@ -309,9 +432,12 @@ function setTagValue(project) {
     tagCustomInput.value = project.tag;
 }
 
-function hideForm() {
+function hideForm(options = {}) {
     mainView.classList.remove('hidden');
     formView.classList.add('hidden');
+    if (options.persist !== false) {
+        persistCurrentPopupState();
+    }
 }
 
 async function save() {
@@ -348,9 +474,25 @@ saveBtn.addEventListener('click', async () => {
 
 addBtn.addEventListener('click', () => showForm());
 cancelBtn.addEventListener('click', hideForm);
-librarySelect.addEventListener('change', renderMetadataOptions);
-collectionSelect.addEventListener('change', toggleCustomFields);
-tagSelect.addEventListener('change', toggleCustomFields);
+librarySelect.addEventListener('change', () => {
+    renderMetadataOptions();
+    persistCurrentPopupState();
+});
+collectionSelect.addEventListener('change', () => {
+    toggleCustomFields();
+    persistCurrentPopupState();
+});
+tagSelect.addEventListener('change', () => {
+    toggleCustomFields();
+    persistCurrentPopupState();
+});
+
+[
+    document.getElementById('p-name'),
+    document.getElementById('p-notebook'),
+    collectionCustomInput,
+    tagCustomInput
+].forEach((input) => input.addEventListener('input', persistCurrentPopupState));
 
 function getSelectedCollection() {
     if (collectionSelect.value === "__custom__") {
@@ -378,10 +520,13 @@ function getSelectedTag() {
 }
 
 function startSync(project) {
-    showToast(`Syncing "${project.name}"...`, 0);
+    showToast(`Syncing "${project.name}"...`, { persist: true });
     chrome.runtime.sendMessage({ action: "START_SYNC", project: project }, (res) => {
         if (chrome.runtime.lastError) {
-             showToast("Error connecting to background script.");
+             showToast("Could not connect to the extension background script. Reload the extension and try again.", {
+                kind: "error",
+                persist: true
+             });
         } else {
              // Status will be updated via listener
         }
@@ -390,10 +535,14 @@ function startSync(project) {
 
 chrome.runtime.onMessage.addListener((msg) => {
     if (msg.action === "UPDATE_STATUS") {
-        showToast(msg.text, msg.text.includes("complete") || msg.text.includes("Error") ? 4000 : 0);
+        const duration = msg.expiresAt ? Math.max(1200, msg.expiresAt - Date.now()) : TOAST_DEFAULT_MS;
+        showToast(msg.text, {
+            kind: msg.kind,
+            duration
+        });
         
         // Stop spinning if complete
-        if (msg.text.includes("complete") || msg.text.includes("Error") || msg.text.includes("up to date")) {
+        if (/complete|error|up to date|no items|skipped/i.test(msg.text)) {
             render();
         }
     }
