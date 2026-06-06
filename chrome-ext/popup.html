@@ -30,7 +30,7 @@
       margin-bottom: 24px;
     }
 
-    h3 { margin: 0; font-size: 20px; font-weight: 800; color: #0f172a; letter-spacing: -0.02em; }
+    h3 { margin: 0; font-size: 20px; font-weight: 800; color: #0f172a; letter-spacing: 0; }
 
     .add-btn {
       background: var(--primary);
@@ -129,8 +129,8 @@
     .form-title { font-weight: 800; margin-bottom: 20px; font-size: 18px; color: #0f172a; }
     
     .field { margin-bottom: 16px; }
-    label { display: block; font-size: 12px; font-weight: 700; margin-bottom: 6px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
-    input { 
+    label { display: block; font-size: 12px; font-weight: 700; margin-bottom: 6px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0; }
+    input, select { 
       width: 100%; 
       padding: 12px; 
       box-sizing: border-box; 
@@ -139,8 +139,9 @@
       font-size: 14px;
       outline: none;
       transition: all 0.2s;
+      background: #ffffff;
     }
-    input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1); }
+    input:focus, select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1); }
 
     .form-actions { display: flex; gap: 10px; margin-top: 24px; }
     .btn-save { background: var(--primary); color: white; flex: 2; border: none; }
@@ -202,18 +203,26 @@
       
       <div class="field">
         <label>Zotero Collection</label>
-        <input type="text" id="p-collection" placeholder="Collection name (optional)">
+        <input type="text" id="p-collection" list="collection-options" placeholder="Collection name (optional)">
+        <datalist id="collection-options"></datalist>
       </div>
 
       <div class="field">
         <label>Sync Tag</label>
-        <input type="text" id="p-tag" placeholder="e.g. #NotebookLM (optional)">
+        <input type="text" id="p-tag" list="tag-options" placeholder="e.g. #NotebookLM (optional)">
+        <datalist id="tag-options"></datalist>
       </div>
 
       <div class="field">
-        <label>Library ID</label>
-        <input type="text" id="p-library" value="0">
-        <div style="font-size: 10px; color: var(--text-muted); margin-top: 4px;">Use '0' for personal library</div>
+        <label>Zotero Library</label>
+        <select id="p-library"></select>
+        <div style="font-size: 10px; color: var(--text-muted); margin-top: 4px;">Collections and tags are filtered by this library</div>
+      </div>
+
+      <div class="field">
+        <label>Notebook ID</label>
+        <input type="text" id="p-notebook" placeholder="Optional (from NotebookLM URL)">
+        <div style="font-size: 10px; color: var(--text-muted); margin-top: 4px;">If empty, extension reads the active NotebookLM tab URL</div>
       </div>
 
       <div class="form-actions">

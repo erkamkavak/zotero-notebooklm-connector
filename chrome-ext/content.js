@@ -1,281 +1,437 @@
-// NotebookLM Injector - Content Script
-// This script helps prepare the upload dialog for the CDP-based injection
+// Browser-native NotebookLM API bridge.
+// Adapted from the source-list and file-upload flow in agmmnn/notebooklm-sdk.
 
-if (window.zoteroNotebookLMInjectorLoaded) {
-    console.log("NotebookLM Injector already active.");
-} else {
-    window.zoteroNotebookLMInjectorLoaded = true;
-    console.log("NotebookLM Injector loaded.");
+if (!globalThis.zoteroNotebookLMBridgeLoaded) {
+    globalThis.zoteroNotebookLMBridgeLoaded = true;
+
+    const RPC_METHOD = {
+        GET_NOTEBOOK: "rLM1Ne",
+        ADD_SOURCE_FILE: "o4cbdc"
+    };
+
+    const SOURCE_TYPE_BY_CODE = {
+        1: "google_docs",
+        2: "google_slides",
+        3: "pdf",
+        4: "pasted_text",
+        5: "web_page",
+        8: "markdown",
+        9: "youtube",
+        10: "media",
+        11: "docx",
+        13: "image",
+        14: "google_spreadsheet",
+        16: "csv"
+    };
+
+    const SOURCE_STATUS_BY_CODE = {
+        1: "processing",
+        2: "ready",
+        3: "error",
+        5: "preparing"
+    };
 
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-        if (request.action === "OPEN_UPLOAD_DIALOG") {
-            console.log("[Injector] Opening upload dialog...");
-            openUploadDialog()
-                .then((result) => sendResponse({ success: true, ...result }))
-                .catch(err => sendResponse({ success: false, error: err.message }));
+        if (request.action === "NOTEBOOKLM_LIST_SOURCES") {
+            listSources(request.notebookId)
+                .then((sources) => {
+                    sendResponse({
+                        success: true,
+                        sources,
+                        sourceNames: sources.map((source) => source.title).filter(Boolean)
+                    });
+                })
+                .catch((err) => sendResponse({ success: false, error: formatError(err) }));
             return true;
         }
-        if (request.action === "CHECK_DIALOG_STATE") {
-            const state = checkDialogState();
-            sendResponse(state);
+
+        if (request.action === "NOTEBOOKLM_UPLOAD_FILES") {
+            uploadFiles(request.notebookId, request.files || [])
+                .then((result) => sendResponse(result))
+                .catch((err) => sendResponse({ success: false, uploaded: [], failed: [], error: formatError(err) }));
             return true;
         }
-    });
-}
 
-/**
- * Selectors for NotebookLM UI elements - centralized for easy updates
- */
-const SELECTORS = {
-    // Add Source button
-    addSourceButton: [
-        '.add-source-button',
-        'button.add-source-button',
-        'button[jslog*="189032"]',
-        '[aria-label*="source" i]',
-        '[aria-label*="kaynak" i]'  // Turkish
-    ],
-    // Upload file button (in the dialog)
-    uploadButton: [
-        '[xapscottyuploadertrigger]',
-        '.drop-zone-icon-button',
-        'button[xapscottyuploadertrigger]',
-        '.xap-uploader-trigger'
-    ],
-    // Dropzone area
-    dropzone: [
-        '[xapscottyuploaderdropzone]',
-        '.xap-uploader-dropzone'
-    ],
-    // File input
-    fileInput: [
-        'input[type="file"][name="Filedata"]',
-        'input[type="file"]'
-    ],
-    // Upload text patterns (multi-language)
-    uploadTextPatterns: [
-        'upload', 'yükle', 'dosya yükle', 'browse', 'select file', 
-        'computer', 'device', 'local file'
-    ]
-};
-
-/**
- * Wait for an element matching any of the selectors
- */
-async function waitForAny(selectors, timeout = 5000) {
-    const start = Date.now();
-    const selectorList = Array.isArray(selectors) ? selectors : [selectors];
-    
-    while (Date.now() - start < timeout) {
-        for (const selector of selectorList) {
-            const el = document.querySelector(selector);
-            if (el && isVisible(el)) {
-                return { element: el, selector };
-            }
-        }
-        await new Promise(r => setTimeout(r, 100));
-    }
-    return null;
-}
-
-/**
- * Check if element is visible (not hidden, has dimensions)
- */
-function isVisible(el) {
-    if (!el) return false;
-    const style = window.getComputedStyle(el);
-    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
         return false;
-    }
-    const rect = el.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0;
-}
+    });
 
-/**
- * Find element by text content (case-insensitive)
- */
-function findByText(patterns, containerSelector = 'body') {
-    const container = document.querySelector(containerSelector) || document.body;
-    const buttons = container.querySelectorAll('button, [role="button"], [role="menuitem"]');
-    
-    for (const btn of buttons) {
-        if (!isVisible(btn)) continue;
-        const text = (btn.textContent || btn.innerText || '').toLowerCase().trim();
-        for (const pattern of patterns) {
-            if (text.includes(pattern.toLowerCase())) {
-                return { element: btn, matchedText: text, pattern };
+    async function listSources(notebookId) {
+        const params = [notebookId, null, [2], null, 0];
+        const notebook = await rpcCall(RPC_METHOD.GET_NOTEBOOK, params, {
+            sourcePath: `/notebook/${notebookId}`
+        });
+
+        if (!Array.isArray(notebook) || notebook.length === 0) return [];
+        const notebookInfo = notebook[0];
+        if (!Array.isArray(notebookInfo) || notebookInfo.length <= 1) return [];
+        const sourcesList = notebookInfo[1];
+        if (!Array.isArray(sourcesList)) return [];
+
+        return sourcesList
+            .filter((source) => Array.isArray(source) && source.length > 0)
+            .map(parseSource);
+    }
+
+    async function uploadFiles(notebookId, files) {
+        const uploaded = [];
+        const failed = [];
+
+        for (const file of files) {
+            const clientFileId = file.clientFileId;
+            const filename = file.filename || "file";
+
+            try {
+                if (!file.base64 || typeof file.base64 !== "string") {
+                    throw new Error("Missing base64 payload");
+                }
+
+                const bytes = base64ToUint8Array(file.base64);
+                const source = await addFileBuffer(notebookId, bytes, filename);
+
+                uploaded.push({
+                    clientFileId,
+                    filename,
+                    sourceId: source.id,
+                    sourceName: source.title
+                });
+            } catch (err) {
+                failed.push({
+                    clientFileId,
+                    filename,
+                    error: formatError(err)
+                });
             }
         }
-    }
-    return null;
-}
 
-/**
- * Simulate a realistic click on an element
- */
-function simulateClick(element) {
-    if (!element) return false;
-    
-    // Focus the element first
-    element.focus?.();
-    
-    // Try native click first
-    element.click();
-    
-    // Also dispatch mouse events for Angular/React components
-    const rect = element.getBoundingClientRect();
-    const centerX = rect.left + rect.width / 2;
-    const centerY = rect.top + rect.height / 2;
-    
-    const mouseEvents = ['mousedown', 'mouseup', 'click'];
-    for (const type of mouseEvents) {
-        element.dispatchEvent(new MouseEvent(type, {
-            bubbles: true,
-            cancelable: true,
-            view: window,
-            clientX: centerX,
-            clientY: centerY
-        }));
+        return {
+            success: failed.length === 0,
+            uploaded,
+            failed
+        };
     }
-    
-    return true;
-}
 
-/**
- * Check current dialog state
- */
-function checkDialogState() {
-    // Check for file input visibility
-    for (const selector of SELECTORS.fileInput) {
-        const input = document.querySelector(selector);
-        if (input) {
-            return { 
-                ready: true, 
-                hasFileInput: true, 
-                fileInputSelector: selector,
-                inputVisible: isVisible(input)
-            };
-        }
-    }
-    
-    // Check for upload button
-    for (const selector of SELECTORS.uploadButton) {
-        const btn = document.querySelector(selector);
-        if (btn && isVisible(btn)) {
-            return { 
-                ready: false, 
-                hasUploadButton: true, 
-                needsUploadClick: true,
-                uploadButtonSelector: selector
-            };
-        }
-    }
-    
-    // Check for dropzone
-    for (const selector of SELECTORS.dropzone) {
-        const dz = document.querySelector(selector);
-        if (dz && isVisible(dz)) {
-            return { 
-                ready: true, 
-                hasDropzone: true, 
-                dropzoneSelector: selector
-            };
-        }
-    }
-    
-    return { ready: false, dialogNotOpen: true };
-}
+    async function addFileBuffer(notebookId, data, fileName) {
+        const params = [
+            [[fileName]],
+            notebookId,
+            [2],
+            [1, null, null, null, null, null, null, null, null, null, [1]]
+        ];
 
-/**
- * Open the upload dialog - handles the two-step process
- */
-async function openUploadDialog() {
-    console.log("[Injector] Starting dialog open sequence...");
-    
-    // Step 1: Check if we're already in the right state
-    let state = checkDialogState();
-    console.log("[Injector] Initial state:", JSON.stringify(state));
-    
-    if (state.ready) {
-        console.log("[Injector] Dialog already ready");
-        return { alreadyOpen: true, state };
+        const result = await rpcCall(RPC_METHOD.ADD_SOURCE_FILE, params, {
+            sourcePath: `/notebook/${notebookId}`,
+            allowNull: true
+        });
+        const sourceId = extractSourceId(result);
+
+        const uploadUrl = await startResumableUpload(notebookId, fileName, data.length, sourceId);
+        await uploadFile(uploadUrl, data);
+
+        return {
+            id: sourceId,
+            title: fileName,
+            status: "processing"
+        };
     }
-    
-    // Step 2: If upload button is visible, click it
-    if (state.hasUploadButton) {
-        console.log("[Injector] Upload button found, clicking...");
-        const result = await waitForAny(SELECTORS.uploadButton, 1000);
-        if (result) {
-            simulateClick(result.element);
-            await new Promise(r => setTimeout(r, 500));
-            state = checkDialogState();
-            if (state.ready) {
-                return { uploadButtonClicked: true, state };
+
+    async function startResumableUpload(notebookId, fileName, fileSize, sourceId) {
+        const response = await fetch("https://notebooklm.google.com/upload/_/?authuser=0", {
+            method: "POST",
+            credentials: "include",
+            headers: {
+                "Accept": "*/*",
+                "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                "x-goog-authuser": "0",
+                "x-goog-upload-command": "start",
+                "x-goog-upload-header-content-length": String(fileSize),
+                "x-goog-upload-protocol": "resumable"
+            },
+            body: JSON.stringify({
+                PROJECT_ID: notebookId,
+                SOURCE_NAME: fileName,
+                SOURCE_ID: sourceId
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`Upload initiation failed: HTTP ${response.status}`);
+        }
+
+        const uploadUrl = response.headers.get("x-goog-upload-url");
+        if (!uploadUrl) {
+            throw new Error("NotebookLM did not return an upload session URL");
+        }
+
+        return uploadUrl;
+    }
+
+    async function uploadFile(uploadUrl, data) {
+        const response = await fetch(uploadUrl, {
+            method: "POST",
+            credentials: "include",
+            headers: {
+                "Accept": "*/*",
+                "Content-Type": "application/x-www-form-urlencoded;charset=utf-8",
+                "X-Goog-Upload-Command": "upload, finalize",
+                "X-Goog-Upload-Offset": "0"
+            },
+            body: data
+        });
+
+        if (!response.ok) {
+            throw new Error(`File upload failed: HTTP ${response.status}`);
+        }
+
+        return response.text();
+    }
+
+    async function rpcCall(methodId, params, options = {}, retried = false) {
+        const tokens = await getTokens();
+        const rpcRequest = [[[methodId, JSON.stringify(params), null, "generic"]]];
+        const body = `f.req=${encodeURIComponent(JSON.stringify(rpcRequest))}&at=${encodeURIComponent(tokens.csrfToken)}&`;
+        const urlParams = new URLSearchParams({
+            rpcids: methodId,
+            "source-path": options.sourcePath || "/",
+            "f.sid": tokens.sessionId,
+            hl: "en",
+            rt: "c"
+        });
+        const url = `https://notebooklm.google.com/_/LabsTailwindUi/data/batchexecute?${urlParams.toString()}`;
+
+        const response = await fetch(url, {
+            method: "POST",
+            credentials: "include",
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
+            },
+            body
+        });
+
+        if ((response.status === 401 || response.status === 403) && !retried) {
+            tokenCache = null;
+            return rpcCall(methodId, params, options, true);
+        }
+
+        if (!response.ok) {
+            throw new Error(`NotebookLM RPC ${methodId} failed: HTTP ${response.status}`);
+        }
+
+        return decodeResponse(await response.text(), methodId, Boolean(options.allowNull));
+    }
+
+    let tokenCache = null;
+
+    async function getTokens() {
+        if (tokenCache) return tokenCache;
+
+        let html = document.documentElement?.innerHTML || "";
+        let tokens = extractTokens(html);
+
+        if (!tokens) {
+            const response = await fetch("https://notebooklm.google.com/", {
+                credentials: "include",
+                redirect: "follow"
+            });
+            if (!response.ok) {
+                throw new Error(`Could not load NotebookLM auth page: HTTP ${response.status}`);
+            }
+            if (response.url.includes("accounts.google.com") || response.url.includes("signin")) {
+                throw new Error("NotebookLM session is not signed in");
+            }
+            html = await response.text();
+            tokens = extractTokens(html);
+        }
+
+        if (!tokens) {
+            throw new Error("Could not extract NotebookLM session tokens");
+        }
+
+        tokenCache = tokens;
+        return tokenCache;
+    }
+
+    function extractTokens(html) {
+        const csrf = /"SNlM0e"\s*:\s*"([^"]+)"/.exec(html);
+        const session = /"FdrFJe"\s*:\s*"([^"]+)"/.exec(html);
+        if (!csrf?.[1] || !session?.[1]) return null;
+        return {
+            csrfToken: csrf[1],
+            sessionId: session[1]
+        };
+    }
+
+    function decodeResponse(rawResponse, rpcId, allowNull = false) {
+        const cleaned = stripAntiXSSI(rawResponse);
+        const chunks = parseChunkedResponse(cleaned);
+        const foundIds = collectRPCIds(chunks);
+        const result = extractRPCResult(chunks, rpcId);
+
+        if (result === undefined && !allowNull) {
+            if (foundIds.length > 0 && !foundIds.includes(rpcId)) {
+                throw new Error(`No result for RPC ID ${rpcId}. Response had IDs: ${foundIds.join(", ")}`);
+            }
+            throw new Error(`No result found for RPC ID ${rpcId}`);
+        }
+
+        return result ?? null;
+    }
+
+    function stripAntiXSSI(response) {
+        if (response.startsWith(")]}'")) {
+            const match = /\)\]\}'\r?\n/.exec(response);
+            if (match) return response.slice(match[0].length);
+        }
+        return response;
+    }
+
+    function parseChunkedResponse(response) {
+        if (!response || !response.trim()) return [];
+
+        const chunks = [];
+        const lines = response.trim().split("\n");
+        let skippedCount = 0;
+        let index = 0;
+
+        while (index < lines.length) {
+            const line = (lines[index] || "").trim();
+            if (!line) {
+                index += 1;
+                continue;
+            }
+
+            if (/^\d+$/.test(line)) {
+                index += 1;
+                if (index < lines.length) {
+                    try {
+                        chunks.push(JSON.parse(lines[index] || ""));
+                    } catch (_) {
+                        skippedCount += 1;
+                    }
+                }
+                index += 1;
+                continue;
+            }
+
+            try {
+                chunks.push(JSON.parse(line));
+            } catch (_) {
+                skippedCount += 1;
+            }
+            index += 1;
+        }
+
+        if (skippedCount > 0 && skippedCount / lines.length > 0.1) {
+            throw new Error(`NotebookLM response parsing failed: ${skippedCount} malformed chunk(s)`);
+        }
+
+        return chunks;
+    }
+
+    function collectRPCIds(chunks) {
+        const ids = [];
+        for (const chunk of chunks) {
+            if (!Array.isArray(chunk)) continue;
+            const items = Array.isArray(chunk[0]) ? chunk : [chunk];
+            for (const item of items) {
+                if (!Array.isArray(item) || item.length < 2) continue;
+                if ((item[0] === "wrb.fr" || item[0] === "er") && typeof item[1] === "string") {
+                    ids.push(item[1]);
+                }
             }
         }
+        return ids;
     }
-    
-    // Step 3: Need to click "Add Source" button first
-    console.log("[Injector] Looking for 'Add Source' button...");
-    
-    let addSourceResult = await waitForAny(SELECTORS.addSourceButton, 2000);
-    
-    // Fallback: search by text
-    if (!addSourceResult) {
-        const byText = findByText(['add source', 'kaynak ekle', 'new source']);
-        if (byText) {
-            addSourceResult = { element: byText.element, selector: 'text:' + byText.pattern };
+
+    function extractRPCResult(chunks, rpcId) {
+        for (const chunk of chunks) {
+            if (!Array.isArray(chunk)) continue;
+            const items = Array.isArray(chunk[0]) ? chunk : [chunk];
+            for (const item of items) {
+                if (!Array.isArray(item) || item.length < 3) continue;
+
+                if (item[0] === "er" && item[1] === rpcId) {
+                    throw new Error(`NotebookLM RPC ${rpcId} returned error: ${String(item[2] || "unknown")}`);
+                }
+
+                if (item[0] === "wrb.fr" && item[1] === rpcId) {
+                    const resultData = item[2];
+                    if (typeof resultData === "string") {
+                        try {
+                            return JSON.parse(resultData);
+                        } catch (_) {
+                            return resultData;
+                        }
+                    }
+                    return resultData;
+                }
+            }
         }
+        return undefined;
     }
-    
-    if (!addSourceResult) {
-        throw new Error("Could not find 'Add Source' button. Make sure you're on a NotebookLM notebook page.");
-    }
-    
-    console.log(`[Injector] Found Add Source button via: ${addSourceResult.selector}`);
-    simulateClick(addSourceResult.element);
-    
-    // Step 4: Wait for the dialog to appear with upload options
-    await new Promise(r => setTimeout(r, 800));
-    
-    // Step 5: Look for and click the upload button
-    console.log("[Injector] Looking for 'Upload file' button in dialog...");
-    
-    let uploadResult = await waitForAny(SELECTORS.uploadButton, 3000);
-    
-    // Fallback: search by text
-    if (!uploadResult) {
-        const byText = findByText(SELECTORS.uploadTextPatterns);
-        if (byText) {
-            uploadResult = { element: byText.element, selector: 'text:' + byText.pattern };
-            console.log(`[Injector] Found upload button by text: "${byText.matchedText}"`);
+
+    function parseSource(source) {
+        const id = Array.isArray(source[0]) ? source[0][0] : source[0];
+        const title = typeof source[1] === "string" ? source[1] : null;
+        let url = null;
+        if (Array.isArray(source[2]) && Array.isArray(source[2][7]) && typeof source[2][7][0] === "string") {
+            url = source[2][7][0];
         }
+
+        let createdAt = null;
+        if (Array.isArray(source[2]) && Array.isArray(source[2][2]) && typeof source[2][2][0] === "number") {
+            createdAt = source[2][2][0] * 1000;
+        }
+
+        let statusCode = 2;
+        if (Array.isArray(source[3]) && typeof source[3][1] === "number") {
+            statusCode = source[3][1];
+        }
+
+        let typeCode = null;
+        if (Array.isArray(source[2]) && typeof source[2][4] === "number") {
+            typeCode = source[2][4];
+        }
+
+        return {
+            id: String(id),
+            title,
+            url,
+            kind: SOURCE_TYPE_BY_CODE[typeCode] || "unknown",
+            createdAt,
+            status: SOURCE_STATUS_BY_CODE[statusCode] || "unknown",
+            _typeCode: typeCode
+        };
     }
-    
-    if (!uploadResult) {
-        // Log available buttons for debugging
-        const buttons = document.querySelectorAll('button, [role="button"]');
-        const visibleButtons = Array.from(buttons).filter(isVisible).map(b => ({
-            text: (b.textContent || '').substring(0, 50),
-            classes: b.className
-        }));
-        console.log("[Injector] Available buttons:", visibleButtons);
-        throw new Error("Could not find 'Upload file' button in dialog. Please try manually opening the upload dialog first.");
+
+    function extractSourceId(result) {
+        if (Array.isArray(result)) {
+            let current = result;
+            while (Array.isArray(current) && current.length > 0) {
+                if (typeof current[0] === "string" && current[0].length > 8) {
+                    return current[0];
+                }
+                current = current[0];
+            }
+
+            for (const item of result) {
+                if (typeof item === "string" && item.length > 8) return item;
+            }
+        }
+
+        if (typeof result === "string" && result.length > 8) return result;
+        throw new Error("Could not extract source ID from NotebookLM response");
     }
-    
-    console.log(`[Injector] Found Upload button via: ${uploadResult.selector}`);
-    simulateClick(uploadResult.element);
-    
-    // Step 6: Wait for file input to be ready
-    await new Promise(r => setTimeout(r, 500));
-    
-    // Verify final state
-    state = checkDialogState();
-    console.log("[Injector] Final state:", JSON.stringify(state));
-    
-    if (!state.ready && !state.hasFileInput) {
-        console.warn("[Injector] Dialog may not be fully ready, but continuing...");
+
+    function base64ToUint8Array(base64) {
+        const binary = atob(base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i += 1) {
+            bytes[i] = binary.charCodeAt(i);
+        }
+        return bytes;
     }
-    
-    return { dialogOpened: true, state };
+
+    function formatError(err) {
+        return err?.message || String(err);
+    }
 }

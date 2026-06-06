@@ -158,6 +158,105 @@ FileEndpoint.prototype = {
 	}
 };
 
+// 3. Metadata endpoint for project setup choices
+function MetadataEndpoint() {}
+MetadataEndpoint.prototype = {
+	supportedMethods: ['POST'],
+	supportedDataTypes: ['application/json'],
+	permitBookmarklet: true,
+
+	init: function (urlObj, data, sendResponseCallback) {
+		(async () => {
+			try {
+				const libraries = await getLibrariesForMetadata();
+				const collections = [];
+				const tags = [];
+
+				for (let library of libraries) {
+					const libraryID = library.actualLibraryID;
+
+					try {
+						const libraryCollections = await Zotero.Collections.getByLibrary(libraryID);
+						for (let collection of libraryCollections) {
+							collections.push({
+								key: collection.key,
+								name: collection.name,
+								libraryID: library.id,
+								actualLibraryID: libraryID,
+								parentKey: collection.parentKey || null
+							});
+						}
+					} catch (e) {
+						Zotero.debug("[NotebookLM Bridge] Failed to list collections: " + e);
+					}
+
+					try {
+						const libraryTags = await getTagsForLibrary(libraryID);
+						for (let tag of libraryTags) {
+							tags.push({
+								name: tag,
+								libraryID: library.id,
+								actualLibraryID: libraryID
+							});
+						}
+					} catch (e) {
+						Zotero.debug("[NotebookLM Bridge] Failed to list tags: " + e);
+					}
+				}
+
+				sendResponseCallback(200, "application/json", JSON.stringify({
+					libraries,
+					collections,
+					tags
+				}));
+			} catch (e) {
+				Zotero.debug("[NotebookLM Bridge] Error listing metadata: " + e);
+				sendResponseCallback(500, "text/plain", "Error: " + e);
+			}
+		})();
+	}
+};
+
+async function getLibrariesForMetadata() {
+	const userLibraryID = Zotero.Libraries.userLibraryID;
+	const libraries = [{
+		id: "0",
+		actualLibraryID: userLibraryID,
+		name: "My Library",
+		type: "user"
+	}];
+
+	if (Zotero.Libraries.getAll) {
+		const allLibraries = await Promise.resolve(Zotero.Libraries.getAll());
+		for (let library of allLibraries) {
+			if (!library || library.libraryID === userLibraryID) continue;
+			libraries.push({
+				id: String(library.libraryID),
+				actualLibraryID: library.libraryID,
+				name: library.name || `Library ${library.libraryID}`,
+				type: library.libraryType || "library"
+			});
+		}
+	}
+
+	return libraries;
+}
+
+async function getTagsForLibrary(libraryID) {
+	if (Zotero.Tags && Zotero.Tags.getAll) {
+		const rawTags = await Zotero.Tags.getAll(libraryID);
+		return rawTags
+			.map(tag => typeof tag === "string" ? tag : tag?.tag || tag?.name)
+			.filter(Boolean)
+			.sort((a, b) => a.localeCompare(b));
+	}
+
+	return Zotero.DB.columnQueryAsync(
+		"SELECT DISTINCT tags.name FROM tags JOIN itemTags USING(tagID) JOIN items USING(itemID) WHERE items.libraryID=? ORDER BY tags.name",
+		[libraryID]
+	);
+}
+
 function encodeBase64(bytes) {
     let binary = '';
     const len = bytes.length;
@@ -178,6 +277,7 @@ function startup({ id, version, resourceURI, rootURI }, reason) {
 function initPlugin(rootURI) {
     Zotero.Server.Endpoints["/notebooklm/list"] = ListEndpoint;
     Zotero.Server.Endpoints["/notebooklm/file"] = FileEndpoint;
+    Zotero.Server.Endpoints["/notebooklm/metadata"] = MetadataEndpoint;
     
     Zotero.debug("NotebookLM Sync: API Endpoints Registered");
 }
@@ -185,6 +285,7 @@ function initPlugin(rootURI) {
 function shutdown(data, reason) {
     delete Zotero.Server.Endpoints["/notebooklm/list"];
     delete Zotero.Server.Endpoints["/notebooklm/file"];
+    delete Zotero.Server.Endpoints["/notebooklm/metadata"];
 }
 
 function install() {}
