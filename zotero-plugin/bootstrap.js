@@ -24,7 +24,7 @@ ListEndpoint.prototype = {
 				
 				if ((collectionKey && collectionKey.trim()) || (collectionName && collectionName.trim())) {
 					const findCollection = async (libID, key, title) => {
-						const collections = await Zotero.Collections.getByLibrary(libID);
+						const collections = await getCollectionsForLibrary(libID);
 						if (key && key.trim()) {
 							for (let col of collections) {
 								if (col.key === key.trim()) return col;
@@ -182,7 +182,7 @@ MetadataEndpoint.prototype = {
 					const libraryID = library.actualLibraryID;
 
 					try {
-						const libraryCollections = await Zotero.Collections.getByLibrary(libraryID);
+						const libraryCollections = await getCollectionsForLibrary(libraryID);
 						const collectionByKey = {};
 						for (let collection of libraryCollections) {
 							collectionByKey[collection.key] = collection;
@@ -243,6 +243,10 @@ function buildCollectionPath(collection, collectionByKey) {
 	}
 
 	return names.join(" / ");
+}
+
+async function getCollectionsForLibrary(libraryID) {
+	return Zotero.Collections.getByLibrary(libraryID, true);
 }
 
 async function getLibrariesForMetadata() {
